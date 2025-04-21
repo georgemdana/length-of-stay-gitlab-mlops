@@ -1,0 +1,5 @@
+# Snowpark
+#--index-url https://repo.snowflake.com/snowflake/snowpark-python-packages/
+snowflake-snowpark-python
+snowflake-connector-python==2.9.0
+cryptography==3.4.7

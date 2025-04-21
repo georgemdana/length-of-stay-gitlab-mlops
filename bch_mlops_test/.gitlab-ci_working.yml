@@ -1,0 +1,152 @@
+###################################### Start yml ######################################
+stages:
+  - testconn
+  - setup
+  - deploy
+
+image: python:3.9
+
+variables:
+# This sets a consistent path for the virtual environment across all stages.
+  PYTHON_VERSION: "3.9"
+  SNOWSQL_VERSION: "1.2.24"
+  VENV_PATH: "${CI_PROJECT_DIR}/venv"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+# model names to reference later
+# MODEL_NAMES: "model1 model2 model3"
+# Specify a custom SSH command for Git to use when connecting to remote repositories
+  GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=no"
+# Snowflake connection variables
+  SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+  SNOWFLAKE_USER: ${SNOWFLAKE_USER}                    # Your service account username
+  SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+  SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
+  SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
+  SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+  #SNOWFLAKE_PRIVATE_KEY: ${SNOWFLAKE_PRIVATE_KEY}
+  PRIVATE_KEY_FILE_NAME: "snowflake_rsa_key.p8"
+
+# Define a YAML anchor for the virtual environment setup
+# This YAML anchor defines the steps to create (if not exists) and activate the virtual environment.
+# This line in each stage inherits the before_script from the .activate_venv anchor, ensuring the virtual environment is activated before running the stage's scripts.
+.activate_venv: &activate_venv
+  - echo "Starting Virtual Environment..."
+  - pip install virtualenv
+  - python3.9 -m venv ${VENV_PATH:-venv}  # Use VENV_PATH if defined, otherwise default to 'venv'
+  - source ${VENV_PATH:-venv}/bin/activate
+  - python3 -m pip install --upgrade pip
+  - echo "Virtual Environment Created!"
+
+# Define the default settings for all jobs. All jobs will use this python image and virtual environment unless overridden
+default:
+  before_script:
+  # Python
+    - python3 -V  # Print out python version for debugging
+    - pip install --no-cache-dir --upgrade pip setuptools wheel
+  # # Virtual Environment
+    - *activate_venv
+  # Packages in Virtual Environment
+    - pip install snowflake-connector-python snowflake-snowpark-python cryptography
+    - python3 -m pip install -r requirements.txt
+    - python3 -m pip list
+  # Gitlab
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - echo "$SNOWFLAKE_PRIVATE_KEY" > ~/.ssh/snowflake_key.p8
+    - chmod 600 ~/.ssh/snowflake_key.p8
+    # - mkdir -p ~/.ssh
+    # - chmod 700 ~/.ssh
+    # - ssh-keyscan -H tier2git.aws.chboston.org >> ~/.ssh/known_hosts
+    - echo "Defaults Defined!"
+  # Snowsql in Virtual Env
+  # Debugging SnowSQL installer download
+    - echo "${SNOWSQL_VERSION}"
+  # Check HTTP response
+    - echo "HTTP response for SnowSQL installer URL:"
+    - curl -v https://childrenshospitalofboston-zfa13221.snowflakecomputing.com
+  # Download with curl and check content
+    - echo "Downloading SnowSQL installer..."
+    - curl -O https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.24-linux_x86_64.bash
+
+    - echo "Checking downloaded file"
+    - ls -l snowsql-1.2.24-linux_x86_64.bash
+    
+    - echo "Viewing first 10 lines of the file"
+    - head -n 10 snowsql-1.2.24-linux_x86_64.bash
+
+    - echo "Content ofsnowsql-1.2.24-linux_x86_64.bash:"
+    - head -n 10 snowsql-1.2.24-linux_x86_64.bash
+    
+  # Run the installer if it's valid
+    - if grep -q '#!/bin/bash' snowsql-1.2.24-linux_x86_64.bash; then bash snowsql-1.2.24-linux_x86_64.bash; else echo "Invalid installer file"; fi
+    
+  # Set up SnowSQL in virtual environment if installed
+    - if [ -f "${HOME}/bin/snowsql" ]; then mkdir -p ${VENV_PATH}/bin && ln -sf ${HOME}/bin/snowsql ${VENV_PATH}/bin/snowsql && export PATH="${VENV_PATH}/bin:$PATH" && snowsql -v; else echo "SnowSQL installation failed"; fi
+  tags:
+  # Default runner tag - GitLab Runner
+    - cron
+
+# This caches the virtual environment to speed up subsequent pipeline runs.
+# Wirtual environment will persist between jobs.
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - $CI_PROJECT_DIR/.cache/pip
+
+
+###################################### Start Stages ######################################
+
+testconn:
+  stage: testconn
+  before_script:
+    - *activate_venv
+    - pip install snowflake-connector-python snowflake-snowpark-python cryptography
+  script:
+    #- SNOWFLAKE_PRIVATE_KEY=$(cat $SNOWFLAKE_PRIVATE_KEY_FILE | base64 | tr -d '\n')
+    - echo "Testing Snowflake Query and Connection"
+  # Create the private key file
+    - mkdir -p .secure_files
+    - echo "$SNOWFLAKE_PRIVATE_KEY" > ".secure_files/${PRIVATE_KEY_FILE_NAME}"
+    - chmod 400 ".secure_files/${PRIVATE_KEY_FILE_NAME}"
+    # - echo "$SNOWFLAKE_PRIVATE_KEY" | base64 --decode > snowflake_key.pem
+    # - chmod 400 snowflake_key.pem
+    - python3 test_sf_conn.py
+
+setup:
+  stage: setup
+  # before_script:
+  #   - python -V
+  #   - pip install virtualenv
+  #   - python -m venv ${VENV_PATH}
+  #   - source ${VENV_PATH}/bin/activate
+  #   - pip install --no-cache-dir --upgrade pip setuptools wheel
+  script:
+    - *activate_venv
+    - echo "Setup Job..."
+    - bash ${CI_PROJECT_DIR}/init_script.py # Run the initialization scripts
+    #- chmod +x ./.gitlab/ci/init_script.sh
+    #- ./init_script.sh
+    #- pip install -r ${CI_PROJECT_DIR}/.gitlab/ci/setup/test_requirements.txt
+    - pip install -r ${CI_PROJECT_DIR}/requirements.txt
+    - echo "Setup Complete!"
+  artifacts:
+    paths:
+      - ${VENV_PATH}
+      - data/
+      - models/
+      - logs/setup.log
+    expire_in: 1 week
+
+deploy:
+  stage: deploy
+  script:
+    - *activate_venv
+    - echo "Deploying..."
+    - snowsql -a $SNOWFLAKE_ACCOUNT -u $SNOWFLAKE_USER -r $SNOWFLAKE_ROLE -w $SNOWFLAKE_WAREHOUSE -d $SNOWFLAKE_DATABASE -s $SNOWFLAKE_SCHEMA -f init_sql.sql
+    - echo "Deployment Complete!"
+  only:
+    - main
+
+#Ensure your tests/ directory contains your pytest files.

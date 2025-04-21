@@ -1,0 +1,43 @@
+image: python:3.11
+
+stages:          # List of stages for jobs, and their order of execution
+  - snowflake-setup
+  - feature-deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+before_script:
+  # - python --version ; pip --version  # For debugging
+  # To use the secure file in your CI/CD pipeline, download it like this
+  - pip install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+  - pip install --upgrade pip
+  - pip install snowflake-snowpark-python snowflake-ml-python
+  - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+  - ls -la .secure_files  # Debug: List contents of .secure_files
+  - chmod 600 .secure_files/*  # Ensure correct permissions, without this the files are too open
+  - python create_connection.py
+  # create_connection.py creates the connections.ini file
+  - cat connections.ini
+
+
+snowflake-job:       # This job sets up the connection to Snowflake 
+  stage: snowflake-setup
+  tags: [usedocker]
+  script:
+    - chmod 600 .secure_files/*
+    - python test_con.py
+
+# los-feature-job:       # This job creates / updates the feature  
+#   stage: feature-deploy
+#   tags: [usedocker]
+#   script:
+#     # - ls -lah 
+#     - python features/length_of_stay.py
+

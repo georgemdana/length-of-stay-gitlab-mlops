@@ -1,0 +1,80 @@
+image: python:3.11
+
+stages:          # List of stages for jobs, and their order of execution
+  - snowflake-setup
+  - feature-deploy
+  - model-deploy
+  - task-deploy
+
+#it should be called out that the env schema selection occurs in create connection it could also have been done here in the workflow section.
+workflow:
+  name: 'CAKE PIPELINE'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && ($CI_COMMIT_REF_NAME =~ /^feature/ || $CI_COMMIT_REF_NAME =~ /^bugfix/) #Allow manual run of feature branches from the ui
+      when: always 
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" #Never run the pipeline on PR request
+      when: never 
+    # TODO add release tag condition 
+    - if:  $CI_COMMIT_REF_NAME == "dev" || $CI_COMMIT_REF_NAME == "qa" || $CI_COMMIT_REF_NAME == "main" # always run on protected branches
+      when: always 
+    # This is an example of protecting main and only allowing manual execution. 
+    # if this was used then the main condition above should be removed
+    # - if:  $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME == "main"  
+    #   when: always 
+    #Default state of when never applies to all other conditions 
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+before_script:
+  # - python --version ; pip --version  # For debugging
+  - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+  - pip install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+  - pip install snowflake-snowpark-python snowflake-ml-python
+  - python create_connection.py
+  - cat connections.ini
+
+snowflake-job:       # This job sets up the connection to Snowflake 
+  stage: snowflake-setup
+  tags: [usedocker]
+  script:
+    # - ls -lah .secure_files
+    - python test_con.py
+
+los-feature-job:       # This job creates / updates the feature  
+  stage: feature-deploy
+  tags: [usedocker]
+  script:
+    - python features/length_of_stay.py
+
+cpc_model_job:       # This job creates / updates the model  
+  stage: model-deploy
+  tags: [usedocker]
+  script:
+    - python models/cpc/create_cpc_model_sproc.py
+
+fuec_model_job:       # This job creates / updates the model  
+  stage: model-deploy
+  tags: [usedocker]
+  script:
+    - python models/fuec/create_fuec_model_sproc.py
+
+edc_model_job:       # This job creates / updates the model  
+  stage: model-deploy
+  tags: [usedocker]
+  script:
+    - python models/edc/create_edc_model_sproc.py
+
+model_tasks_job:       # This job creates / updates the tasks that execute the models  
+  stage: task-deploy
+  tags: [usedocker]
+  script:
+    - python tasks/model_tasks.py
+
+
